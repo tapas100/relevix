@@ -1,0 +1,189 @@
+# podman-compose.yml — Production-like stack
+# Uses pre-built images. For local dev use podman-compose.dev.yml.
+#
+# Run with: podman compose -f podman-compose.yml up -d
+#   (requires podman >= 4.7 with built-in compose, or: pip install podman-compose)
+#
+# Podman notes:
+#   - Rootless by default: no daemon, no root required.
+#   - Containers communicate via a shared user-space network (pasta/slirp4netns).
+#   - Secrets should be injected via .env file or Podman secrets (podman secret create).
+#   - Replace "restart: unless-stopped" with systemd unit files for production.
+#
+# Secrets must be injected via .env file or Podman secrets — never hardcoded.
+
+name: relevix
+
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [relevix-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [relevix-net]
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks: [relevix-net]
+
+  # ── Application services ────────────────────────────────────────────────────
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: apps/api-gateway/Containerfile
+    restart: unless-stopped
+    ports:
+      - "${API_GATEWAY_PORT:-3000}:3000"
+    env_file: .env
+    environment:
+      SERVICE_NAME: api-gateway
+      RULE_ENGINE_URL: http://rule-engine:8080
+      INGESTION_URL: http://ingestion:4000
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      # Intelligence API tuning
+      INTELLIGENCE_CACHE_TTL_SECONDS: "25"
+      INTELLIGENCE_RATE_LIMIT_MAX: "30"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [relevix-net]
+
+  rule-engine:
+    build:
+      context: .
+      dockerfile: services/rule-engine/Containerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: rule-engine
+      PORT: "8080"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    networks: [relevix-net]
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: services/ingestion/Containerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SERVICE_NAME: ingestion
+      PORT: "4000"
+      ENVIRONMENT: production
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_INPUT: relevix.logs.raw
+      KAFKA_TOPIC_OUTPUT: relevix.logs.normalized
+      KAFKA_TOPIC_DLQ: relevix.logs.dlq
+      INTAKE_BUFFER_SIZE: "50000"
+      WORKER_COUNT: "32"
+      BATCH_SIZE: "250"
+      BATCH_FLUSH_INTERVAL: "200ms"
+      OUTPUT_BUFFER_SIZE: "10000"
+      MAX_RETRY_ATTEMPTS: "3"
+      RETRY_BASE_DELAY: "500ms"
+      METRICS_PORT: "9090"
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres: { condition: service_healthy }
+      kafka:    { condition: service_healthy }
+    networks: [relevix-net]
+
+  signal-processor:
+    build:
+      context: .
+      dockerfile: services/signal-processor/Containerfile
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${SIGNAL_PROCESSOR_PORT:-8082}:8082"
+      - "${SIGNAL_PROCESSOR_METRICS_PORT:-9092}:9092"
+    environment:
+      SERVICE_NAME: signal-processor
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: signal-processor
+      KAFKA_TOPIC_INPUT: relevix.logs.normalized
+      KAFKA_TOPIC_SIGNALS: relevix.signals
+      KAFKA_MAX_BYTES: "1048576"
+      KAFKA_COMMIT_INTERVAL: "500ms"
+      WINDOW_SIZE: "60s"
+      TICK_INTERVAL: "10s"
+      RING_CAPACITY: "16384"
+      MAX_DIMENSIONS: "10000"
+      OBS_CHAN_SIZE: "50000"
+      SNAPSHOT_CHAN_SIZE: "2000"
+      SIGNAL_CHAN_SIZE: "5000"
+      HTTP_ADDR: ":8082"
+      METRICS_ADDR: ":9092"
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+    depends_on:
+      kafka: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks: [relevix-net]
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+
+networks:
+  relevix-net:
+    driver: bridge

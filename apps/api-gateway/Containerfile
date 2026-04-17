@@ -1,0 +1,53 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+# Podman-compatible OCI build (Containerfile syntax is identical to Dockerfile).
+# Build with: podman build -f apps/api-gateway/Dockerfile -t relevix/api-gateway .
+FROM node:20-alpine AS builder
+
+RUN corepack enable && corepack prepare pnpm@9.4.0 --activate
+
+WORKDIR /app
+
+# Copy manifests first (layer cache optimisation)
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json ./
+COPY tsconfig.base.json ./
+
+COPY libs/types/package.json       ./libs/types/
+COPY libs/config/package.json      ./libs/config/
+COPY libs/logger/package.json      ./libs/logger/
+COPY libs/errors/package.json      ./libs/errors/
+COPY apps/api-gateway/package.json ./apps/api-gateway/
+
+# Install ALL deps (including devDeps needed to build)
+RUN pnpm install --frozen-lockfile
+
+# Copy source
+COPY libs/ ./libs/
+COPY apps/api-gateway/ ./apps/api-gateway/
+
+# Build libs then app via Turbo
+RUN pnpm turbo run build --filter=@relevix/api-gateway...
+
+# ─── Runtime stage ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 relevix \
+ && adduser  --system --uid 1001 relevix \
+ && apk add --no-cache curl
+
+WORKDIR /app
+
+# Copy only the built artefacts + production node_modules
+COPY --from=builder --chown=relevix:relevix /app/apps/api-gateway/dist ./dist
+COPY --from=builder --chown=relevix:relevix /app/node_modules          ./node_modules
+COPY --from=builder --chown=relevix:relevix /app/apps/api-gateway/package.json ./package.json
+
+USER relevix
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -sf http://localhost:3000/health || exit 1
+
+CMD ["node", "dist/main.js"]

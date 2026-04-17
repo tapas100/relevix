@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+bin/
+.next/
+out/
+
+# Turbo cache
+.turbo/
+
+# TypeScript incremental
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Environment files — NEVER commit these
+.env
+.env.local
+.env.*.local
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Go binaries
+services/rule-engine/rule-engine
+services/rule-engine/bin/
+services/ingestion/ingestion
+services/ingestion/bin/
+
+# Logs
+*.log
+logs/
+
+# Podman
+.podman/
+podman-*.env

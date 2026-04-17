@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@relevix/types": ["./libs/types/src/index.ts"],
+      "@relevix/config": ["./libs/config/src/index.ts"],
+      "@relevix/logger": ["./libs/logger/src/index.ts"],
+      "@relevix/errors": ["./libs/errors/src/index.ts"],
+      "@relevix/sdk": ["./libs/sdk/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "**/dist/**", "**/*.test.ts"]
+}

@@ -1,0 +1,37 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+# Podman-compatible OCI build.
+# Build with: podman build -f services/rule-engine/Dockerfile -t relevix/rule-engine .
+# The final image is FROM scratch — ~10 MB, no shell, minimal attack surface.
+FROM golang:1.22-alpine AS builder
+
+# Install build tools
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+# Copy go.mod first (layer cache)
+COPY services/rule-engine/go.mod services/rule-engine/go.sum ./
+RUN go mod download
+
+# Copy source
+COPY services/rule-engine/ ./
+
+# Build a statically linked binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /bin/rule-engine ./cmd/server
+
+# ─── Runtime stage ────────────────────────────────────────────────────────────
+FROM scratch AS runner
+
+# Copy timezone data and CA certs from builder
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+COPY --from=builder /bin/rule-engine /rule-engine
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["/rule-engine", "-healthcheck"]
+
+ENTRYPOINT ["/rule-engine"]

@@ -1,0 +1,403 @@
+# Relevix Rule DSL — v2
+#
+# A rule file is a YAML document containing a list of Rule objects.
+# Rules are loaded from disk or a database and hot-reloaded without restart.
+#
+# ─── Top-level fields ─────────────────────────────────────────────────────────
+#
+#   id            string   Globally unique rule ID (UUID v4 or slug)
+#   version       int      Monotonically increasing. Loader rejects downgrades.
+#   name          string   Human label shown in alerts / dashboards
+#   description   string   Why this rule exists (required for review)
+#   enabled       bool     Hot-toggle without delete
+#   priority      int      Lower = evaluated first. Ties broken by id lexical order.
+#   severity      enum     info | warning | critical | page
+#   tags          []string Free-form labels for grouping / filtering
+#
+# ─── Condition block ──────────────────────────────────────────────────────────
+#
+#   condition_logic  ALL | ANY | MIN_N
+#     ALL   → all conditions must match (AND)
+#     ANY   → at least one must match (OR)
+#     MIN_N → at least `min_match` conditions must match
+#   min_match  int  (only used when condition_logic == MIN_N)
+#
+#   conditions[] — list of predicates:
+#     field     dot-path into the evaluation context
+#               special prefixes:
+#                 signal.*     — fields from a Signal struct
+#                 baseline.*   — fields derived from BaselineStats
+#                 meta.*       — request metadata (tenant, env, service)
+#     op        see operator table below
+#     value     scalar or list depending on op
+#     negate    bool — inverts the predicate result
+#     weight    float (0,1] — contributes to confidence score
+#
+# ─── Confidence block ─────────────────────────────────────────────────────────
+#
+#   confidence:
+#     base     float   starting confidence [0,1] when rule matches
+#     modifiers[] — list of adjustments applied in order:
+#       when    condition (same schema as rule conditions)
+#       adjust  float signed delta applied to running confidence
+#
+# ─── Action block ─────────────────────────────────────────────────────────────
+#
+#   action  enum  alert | suppress | escalate | enrich | page | create_incident
+#   action_payload  map[string]any   passed verbatim to the action handler
+#
+# ─── Deduplication block ──────────────────────────────────────────────────────
+#
+#   dedup:
+#     key      go-template evaluated against the context — same key = same group
+#     window   duration string (e.g. "5m") — deduplicate within this window
+#     max_fire int      max times this rule fires per dedup window per key
+#
+# ─── Operators ────────────────────────────────────────────────────────────────
+#
+#   eq / neq                  equality
+#   gt / gte / lt / lte       numeric comparison
+#   in / not_in               membership in a list
+#   contains / starts_with / ends_with  string predicates
+#   regex                     RE2-compatible pattern
+#   between                   value: [lo, hi]  →  lo ≤ field ≤ hi
+#   percent_change            value: float (% change relative to baseline.mean)
+#   stddev_above              value: float (multiples of baseline.std_dev)
+#   rate_of_change            value: float/s (derivative of signal over window)
+#   missing                   field does not exist or is null
+#   exists                    field exists and is not null
+#
+# ─── Example rules ────────────────────────────────────────────────────────────
+
+rules:
+
+  # ── 1. P95 Latency Spike ─────────────────────────────────────────────────────
+  - id: latency-p95-spike
+    version: 3
+    name: "P95 Latency Spike"
+    description: >
+      Fires when p95 latency exceeds the rolling baseline by more than 3 standard
+      deviations AND the raw value is above a minimum floor (avoids noise on
+      services with a naturally low baseline).
+    enabled: true
+    priority: 10
+    severity: warning
+    tags: [latency, slo, api]
+
+    condition_logic: ALL
+    conditions:
+      - field: signal.kind
+        op: eq
+        value: latency_p95
+        weight: 0.0          # selector — not a quality signal, no weight
+
+      - field: signal.value
+        op: gte
+        value: 200           # 200 ms floor — ignore sub-200ms services
+        weight: 0.3
+
+      - field: signal.z_score
+        op: stddev_above
+        value: 3.0           # 3σ above baseline
+        weight: 0.5
+
+      - field: signal.sample_count
+        op: gte
+        value: 30            # statistical significance guard
+        weight: 0.2
+
+    confidence:
+      base: 0.70
+      modifiers:
+        - when:
+            field: signal.z_score
+            op: gte
+            value: 4.0
+          adjust: +0.15       # even stronger deviation → more confidence
+
+        - when:
+            field: meta.environment
+            op: eq
+            value: production
+          adjust: +0.10
+
+        - when:
+            field: signal.sample_count
+            op: lt
+            value: 100
+          adjust: -0.10       # low sample count → less confident
+
+    action: alert
+    action_payload:
+      channel: "#slo-alerts"
+      runbook: "https://wiki.internal/runbooks/latency-spike"
+      slo_budget_burn: true
+
+    dedup:
+      key: "{{ .meta.tenant_id }}/{{ .meta.service }}/latency_p95"
+      window: "5m"
+      max_fire: 1
+
+
+  # ── 2. Error Rate Threshold Breach ───────────────────────────────────────────
+  - id: error-rate-critical
+    version: 2
+    name: "Error Rate Critical Threshold"
+    description: >
+      Fires when the error rate crosses 5% for a production service with
+      meaningful traffic. Combines an absolute threshold with a relative
+      change guard to avoid firing on already-degraded services.
+    enabled: true
+    priority: 5             # higher priority than latency (errors are more severe)
+    severity: critical
+    tags: [errors, slo, production]
+
+    condition_logic: ALL
+    conditions:
+      - field: signal.kind
+        op: eq
+        value: error_rate
+        weight: 0.0
+
+      - field: signal.value
+        op: gte
+        value: 0.05          # 5% absolute threshold
+        weight: 0.4
+
+      - field: signal.throughput
+        op: gte
+        value: 1.0           # at least 1 req/s — ignore idle services
+        weight: 0.2
+
+      - field: meta.environment
+        op: eq
+        value: production
+        weight: 0.0          # selector — no weight contribution
+
+      - field: signal.anomaly
+        op: in
+        value: [warning, critical]
+        weight: 0.4
+
+    confidence:
+      base: 0.80
+      modifiers:
+        - when:
+            field: signal.value
+            op: gte
+            value: 0.20       # ≥20% error rate
+          adjust: +0.15
+
+        - when:
+            field: signal.z_score
+            op: gte
+            value: 4.0
+          adjust: +0.10
+
+        - when:
+            field: signal.sample_count
+            op: lt
+            value: 50
+          adjust: -0.20
+
+    action: escalate
+    action_payload:
+      escalation_policy: "prod-oncall"
+      incident_severity: P1
+      runbook: "https://wiki.internal/runbooks/error-rate"
+
+    dedup:
+      key: "{{ .meta.tenant_id }}/{{ .meta.service }}/error_rate"
+      window: "10m"
+      max_fire: 2
+
+
+  # ── 3. Throughput Drop (Traffic Loss) ────────────────────────────────────────
+  - id: throughput-drop
+    version: 1
+    name: "Throughput Drop — Possible Traffic Loss"
+    description: >
+      Fires when throughput falls more than 40% below the rolling baseline.
+      This pattern indicates load balancer issues, upstream routing problems,
+      or silent crash-loops (service restarts before requests arrive).
+    enabled: true
+    priority: 8
+    severity: warning
+    tags: [throughput, availability, traffic]
+
+    condition_logic: ALL
+    conditions:
+      - field: signal.kind
+        op: eq
+        value: throughput
+        weight: 0.0
+
+      - field: signal.value
+        op: percent_change
+        value: -40            # 40% below baseline mean
+        weight: 0.6
+
+      - field: baseline.mean
+        op: gte
+        value: 5.0            # only meaningful on services with ≥5 rps baseline
+        weight: 0.2
+
+      - field: signal.sample_count
+        op: gte
+        value: 20
+        weight: 0.2
+
+    confidence:
+      base: 0.65
+      modifiers:
+        - when:
+            field: signal.value
+            op: percent_change
+            value: -70
+          adjust: +0.20       # near-total traffic loss
+
+        - when:
+            field: meta.environment
+            op: neq
+            value: production
+          adjust: -0.15
+
+    action: alert
+    action_payload:
+      channel: "#infra-alerts"
+      possible_causes:
+        - load_balancer_misconfiguration
+        - upstream_routing_failure
+        - crash_loop_backoff
+
+    dedup:
+      key: "{{ .meta.tenant_id }}/{{ .meta.service }}/throughput"
+      window: "10m"
+      max_fire: 1
+
+
+  # ── 4. Cascading Failure — Multi-Service Correlation ─────────────────────────
+  - id: cascading-failure-detection
+    version: 2
+    name: "Cascading Failure — Correlated Degradation"
+    description: >
+      Fires when three or more distinct signals are anomalous simultaneously
+      for the same tenant. Indicates a systemic issue rather than a single
+      service glitch. Uses MIN_N logic so partial matches still compute
+      a reduced confidence score.
+    enabled: true
+    priority: 3              # very high priority — systemic issue
+    severity: critical
+    tags: [cascading, systemic, incident]
+
+    condition_logic: MIN_N
+    min_match: 3
+    conditions:
+      - field: signal.kind
+        op: eq
+        value: error_rate
+        weight: 0.25
+
+      - field: signal.anomaly
+        op: eq
+        value: critical
+        weight: 0.25
+
+      - field: context.affected_services_count
+        op: gte
+        value: 2
+        weight: 0.25
+
+      - field: signal.z_score
+        op: gte
+        value: 3.0
+        weight: 0.25
+
+    confidence:
+      base: 0.55
+      modifiers:
+        - when:
+            field: context.affected_services_count
+            op: gte
+            value: 5
+          adjust: +0.30
+
+        - when:
+            field: meta.environment
+            op: eq
+            value: production
+          adjust: +0.15
+
+    action: create_incident
+    action_payload:
+      severity: P0
+      oncall_policy: "executive-escalation"
+      auto_war_room: true
+
+    dedup:
+      key: "{{ .meta.tenant_id }}/cascading"
+      window: "15m"
+      max_fire: 1
+
+
+  # ── 5. Baseline Regression (Silent Degradation) ───────────────────────────────
+  - id: baseline-regression
+    version: 1
+    name: "Baseline Regression — Gradual Latency Creep"
+    description: >
+      Detects slow latency regressions that never cross a hard threshold but
+      consistently run 1.5–2.5σ above baseline. These are missed by threshold
+      rules but indicate code regressions, memory leaks, or dependency slowdowns.
+      Uses rate_of_change to confirm the trend is sustained.
+    enabled: true
+    priority: 20             # lower priority — informational / trend
+    severity: info
+    tags: [regression, trend, sre]
+
+    condition_logic: ALL
+    conditions:
+      - field: signal.kind
+        op: in
+        value: [latency_p95, latency_mean]
+        weight: 0.0
+
+      - field: signal.z_score
+        op: between
+        value: [1.5, 2.5]     # persistent moderate elevation, not a spike
+        weight: 0.4
+
+      - field: signal.value
+        op: rate_of_change
+        value: 0.5            # latency increasing at ≥0.5 ms/s trend
+        weight: 0.4
+
+      - field: signal.sample_count
+        op: gte
+        value: 60
+        weight: 0.2
+
+    confidence:
+      base: 0.50
+      modifiers:
+        - when:
+            field: meta.environment
+            op: eq
+            value: production
+          adjust: +0.15
+
+        - when:
+            field: signal.z_score
+            op: gte
+            value: 2.0
+          adjust: +0.10
+
+    action: enrich
+    action_payload:
+      annotation: "sustained_latency_regression"
+      suggest_profiling: true
+      dashboard_link: "https://grafana.internal/d/latency-trend"
+
+    dedup:
+      key: "{{ .meta.tenant_id }}/{{ .meta.service }}/regression/{{ .signal.kind }}"
+      window: "30m"
+      max_fire: 1

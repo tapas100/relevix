@@ -1,0 +1,22 @@
+{
+  "name": "@relevix/mcp-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relevix MCP (Model Context Protocol) server — exposes insight tools to AI agents",
+  "type": "module",
+  "scripts": {
+    "build":     "tsc --project tsconfig.json",
+    "dev":       "tsx src/index.ts",
+    "start":     "node dist/apps/mcp-server/src/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@relevix/types":               "workspace:*",
+    "@modelcontextprotocol/sdk":    "^1.10.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx":         "^4.16.0",
+    "typescript":  "^5.5.2"
+  }
+}

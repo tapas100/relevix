@@ -1,0 +1,63 @@
+{
+  "name": "relevix",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Relevix — distributed relevance & rule engine platform",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "clean": "turbo run clean && rimraf node_modules",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\" --ignore-path .prettierignore",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\" --ignore-path .prettierignore",
+    "podman:up": "podman compose -f podman-compose.yml up -d",
+    "podman:down": "podman compose -f podman-compose.yml down",
+    "podman:dev": "podman compose -f podman-compose.dev.yml up",
+    "podman:build": "podman compose -f podman-compose.yml build",
+    "podman:logs": "podman compose -f podman-compose.yml logs -f",
+    "obs:up": "podman compose -f podman-compose.observability.yml up -d",
+    "obs:down": "podman compose -f podman-compose.observability.yml down",
+    "obs:logs": "podman compose -f podman-compose.observability.yml logs -f",
+    "prepare": "husky",
+    "pm2:build:go": "bash scripts/pm2.sh build:go",
+    "pm2:dev": "bash scripts/pm2.sh dev",
+    "pm2:start": "bash scripts/pm2.sh start",
+    "pm2:stop": "bash scripts/pm2.sh stop",
+    "pm2:restart": "bash scripts/pm2.sh restart",
+    "pm2:reload": "bash scripts/pm2.sh reload",
+    "pm2:delete": "bash scripts/pm2.sh delete",
+    "pm2:logs": "bash scripts/pm2.sh logs",
+    "pm2:status": "bash scripts/pm2.sh status",
+    "pm2:save": "bash scripts/pm2.sh save",
+    "pm2:startup": "bash scripts/pm2.sh startup",
+    "pm2:monit": "bash scripts/pm2.sh monit",
+    "pm2:infra:up": "bash scripts/pm2.sh infra:up",
+    "pm2:infra:down": "bash scripts/pm2.sh infra:down",
+    "cli": "node apps/cli/dist/apps/cli/src/index.js",
+    "mcp": "node apps/mcp-server/dist/apps/mcp-server/src/index.js",
+    "seed": "node scripts/seed.mjs",
+    "seed:quick": "node scripts/seed.mjs --count 5000 --anomaly high",
+    "seed:large": "node scripts/seed.mjs --count 250000 --anomaly medium",
+    "seed:dry": "node scripts/seed.mjs --count 1000 --dryRun"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.7",
+    "prettier": "^3.3.2",
+    "rimraf": "^5.0.7",
+    "turbo": "^2.0.6",
+    "typescript": "^5.5.2"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+    "*.{json,md,yml,yaml}": ["prettier --write"]
+  },
+  "packageManager": "pnpm@9.4.0"
+}

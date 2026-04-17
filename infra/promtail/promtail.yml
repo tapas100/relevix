@@ -1,0 +1,74 @@
+# ─── Promtail — log shipper from containers → Loki ───────────────────────────
+#
+# Scrapes stdout/stderr from all Relevix containers and ships JSON logs to Loki.
+# The pipeline_stages section extracts fields from pino's JSON so they become
+# Loki label selectors (enables fast filtering by service, level, trace_id).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+
+  - job_name: containers
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: relevix
+          __path__: /var/log/containers/*.log  # override per runtime
+
+    pipeline_stages:
+
+      # 1. Docker / containerd log wrapper
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            time:   time
+
+      - output:
+          source: output
+
+      # 2. Parse pino JSON log line
+      - json:
+          expressions:
+            level:     level
+            service:   service
+            trace_id:  trace_id
+            span_id:   span_id
+            tenant_id: tenantId
+            req_id:    requestId
+            # msg is left in the log line body
+
+      # 3. Promote high-cardinality fields to Loki labels
+      - labels:
+          level:
+          service:
+
+      # 4. Drop trace_id / tenant_id from labels (too high cardinality)
+      #    but keep them searchable in the log body.
+
+      # 5. PII scrub — belt-and-suspenders after pino redact.
+      #    Matches Authorization header value or JWT bearer token patterns.
+      - replace:
+          expression: '(Authorization|authorization):\s*Bearer\s+[A-Za-z0-9\-._~+/]+=*'
+          replace:    '$1: Bearer [REDACTED]'
+      - replace:
+          expression: '"(email|password|token|apiKey|cardNumber|cvv)"\s*:\s*"[^"]+"'
+          replace:    '"$1":"[REDACTED]"'
+      - replace:
+          # IPv4 addresses
+          expression: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+          replace:    '[IP]'
+
+      # 6. Set the log timestamp from the pino @timestamp field
+      - timestamp:
+          source: time
+          format: RFC3339Nano

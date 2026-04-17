@@ -1,0 +1,30 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+# Podman-compatible OCI build.
+# Build with: podman build -f services/ingestion/Dockerfile -t relevix/ingestion .
+FROM golang:1.22-alpine AS builder
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+COPY services/ingestion/go.mod services/ingestion/go.sum ./
+RUN go mod download
+
+COPY services/ingestion/ ./
+
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /bin/ingestion ./cmd/server
+
+# ─── Runtime stage ────────────────────────────────────────────────────────────
+FROM scratch AS runner
+
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /bin/ingestion /ingestion
+
+EXPOSE 4000
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["/ingestion", "-healthcheck"]
+
+ENTRYPOINT ["/ingestion"]

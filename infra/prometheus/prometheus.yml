@@ -1,0 +1,72 @@
+# ─── Prometheus scrape configuration ─────────────────────────────────────────
+#
+# Scrapes all Relevix services every 15 s.
+# In production replace static_configs with service-discovery
+# (consul_sd_configs, kubernetes_sd_configs, etc.).
+#
+# Recording rules + alerting rules live in infra/prometheus/rules/.
+# Alerts fire into Alertmanager → PagerDuty / Slack.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  # Attach these labels to every time-series written by this Prometheus instance.
+  external_labels:
+    environment: production
+    region:      us-east-1  # override per environment
+
+# ─── Rule files ───────────────────────────────────────────────────────────────
+rule_files:
+  - "rules/recording_rules.yml"
+  - "rules/alerting_rules.yml"
+
+# ─── Alertmanager ─────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+# ─── Scrape configs ───────────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── Node.js API Gateway ────────────────────────────────────────────────────
+  - job_name: api-gateway
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['api-gateway:3001']
+    # Scrape behind internal network only — never expose :3001 to the internet
+    # without IP allowlist / mTLS.
+
+  # ── Go Rule Engine ─────────────────────────────────────────────────────────
+  # rule-engine exposes /metrics on the same port (default :8080).
+  - job_name: rule-engine
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['rule-engine:8080']
+
+  # ── Go Ingestion Service ───────────────────────────────────────────────────
+  - job_name: ingestion
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['ingestion:4000']
+
+  # ── Go Signal Processor ────────────────────────────────────────────────────
+  - job_name: signal-processor
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['signal-processor:4001']
+
+  # ── Redis (via redis_exporter) ─────────────────────────────────────────────
+  - job_name: redis
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # ── Postgres (via postgres_exporter) ──────────────────────────────────────
+  - job_name: postgres
+    static_configs:
+      - targets: ['postgres-exporter:9187']

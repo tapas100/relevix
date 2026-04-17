@@ -1,0 +1,65 @@
+# ─── Recording rules ──────────────────────────────────────────────────────────
+#
+# Pre-aggregated time-series that are cheap to query in dashboards.
+# Naming convention: <namespace>:<metric>:<aggregation>
+
+groups:
+
+  - name: api_gateway_recording
+    interval: 30s
+    rules:
+
+      # Request rate — requests per second, 5-min window
+      - record: job:http_requests:rate5m
+        expr: |
+          sum by (job, route, method, status_code) (
+            rate(http_requests_total[5m])
+          )
+
+      # Error rate — fraction of 5xx responses
+      - record: job:http_error_rate:rate5m
+        expr: |
+          sum by (job) (rate(http_errors_total{status_code=~"5.."}[5m]))
+          /
+          sum by (job) (rate(http_requests_total[5m]))
+
+      # P99 latency
+      - record: job:http_request_duration_p99:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # P50 latency
+      - record: job:http_request_duration_p50:5m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (job, le) (
+              rate(http_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # OpenAI cost proxy — tokens consumed per minute
+      - record: job:openai_tokens:rate1m
+        expr: |
+          sum(rate(openai_tokens_used_total[1m])) * 60
+
+      # OpenAI fallback rate
+      - record: job:openai_fallback_rate:rate5m
+        expr: |
+          sum(rate(openai_requests_total{outcome="fallback"}[5m]))
+          /
+          sum(rate(openai_requests_total[5m]))
+
+      # Cache hit rate
+      - record: job:cache_hit_rate:rate5m
+        expr: |
+          sum by (namespace) (rate(cache_hits_total[5m]))
+          /
+          (
+            sum by (namespace) (rate(cache_hits_total[5m]))
+            +
+            sum by (namespace) (rate(cache_misses_total[5m]))
+          )

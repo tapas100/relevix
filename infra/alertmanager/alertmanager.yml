@@ -1,0 +1,73 @@
+# ─── Alertmanager routing ─────────────────────────────────────────────────────
+#
+# Receivers:
+#   pagerduty — page severity: wakes the on-call engineer immediately
+#   slack     — warn severity: posts to #relevix-alerts
+#   devnull   — silence (used for inhibition)
+#
+# Set secrets via environment variables — never commit keys to git.
+
+global:
+  resolve_timeout: 5m
+  # SMTP for email fallback
+  smtp_smarthost:  "smtp.example.com:587"
+  smtp_from:       "alerts@example.com"
+  smtp_require_tls: true
+
+route:
+  receiver: slack
+  group_by: ['alertname', 'job']
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+
+  routes:
+    # P1 — page severity goes to PagerDuty immediately
+    - matchers:
+        - severity = "page"
+      receiver: pagerduty
+      group_wait: 0s        # no batching for pages
+      repeat_interval: 1h
+
+    # P3 — warn severity goes to Slack
+    - matchers:
+        - severity = "warn"
+      receiver: slack
+      repeat_interval: 8h
+
+inhibit_rules:
+  # Suppress warn alerts while a page is firing for the same job
+  - source_matchers:
+      - severity = "page"
+    target_matchers:
+      - severity = "warn"
+    equal: ['alertname', 'job']
+
+receivers:
+
+  - name: pagerduty
+    pagerduty_configs:
+      - service_key: ${PAGERDUTY_SERVICE_KEY}
+        description: '{{ range .Alerts }}{{ .Annotations.summary }}\n{{ end }}'
+        details:
+          description: '{{ range .Alerts }}{{ .Annotations.description }}\n{{ end }}'
+          runbook:     '{{ range .Alerts }}{{ .Annotations.runbook_url }}\n{{ end }}'
+
+  - name: slack
+    slack_configs:
+      - api_url: ${SLACK_WEBHOOK_URL}
+        channel: '#relevix-alerts'
+        icon_emoji: ':fire:'
+        title: |
+          [{{ .Status | toUpper }}] {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}
+        text: |
+          {{ range .Alerts -}}
+          *Alert:* {{ .Annotations.summary }}
+          *Severity:* {{ .Labels.severity }}
+          *Description:* {{ .Annotations.description }}
+          *Runbook:* {{ .Annotations.runbook_url }}
+          {{ end }}
+        send_resolved: true
+
+  - name: devnull
+    # intentionally empty
