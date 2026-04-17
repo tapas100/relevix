@@ -179,6 +179,36 @@ services:
       retries: 3
     networks: [relevix-net]
 
+  # ── Database initialisation (one-shot) ──────────────────────────────────────
+  # Runs migrations, creates Kafka topics, and sets up Elasticsearch indices.
+  # Exits with code 0 on success; restart: on-failure means it retries if
+  # dependencies aren't ready yet.
+  init-db:
+    image: node:22-alpine
+    restart: "no"
+    working_dir: /app
+    volumes:
+      - .:/app:ro
+      - /app/node_modules  # anonymous volume so host node_modules don't leak in
+    command: >
+      sh -c "
+        apk add --no-cache postgresql-client netcat-openbsd bash curl &&
+        npm install --no-save 2>/dev/null || true &&
+        bash /app/scripts/db/init-all.sh
+      "
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_CONTAINER: ""   # not needed inside compose network
+      ES_URL: http://elasticsearch:9200
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      postgres:      { condition: service_healthy }
+      redis:         { condition: service_healthy }
+      kafka:         { condition: service_healthy }
+    networks: [relevix-net]
+    profiles: [init]   # run with: podman compose --profile init up init-db
+
 volumes:
   postgres_data:
   redis_data:
