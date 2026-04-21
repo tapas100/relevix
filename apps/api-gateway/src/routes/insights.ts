@@ -106,6 +106,39 @@ export async function insightsRoutes(
         insights = normaliseInsights(raw.insights);
         fromCache   = raw.from_cache;
         computedAt  = raw.computed_at;
+
+        // When rule-engine is healthy but has no evaluated insights yet
+        // (e.g. pipeline not running, no signals), fall back to Postgres
+        // so seeded / persisted insights are always visible.
+        if (insights.length === 0) {
+          req.log.debug({ tenantId }, 'rule-engine returned 0 insights — enriching from Postgres');
+          const repo = new InsightRepository();
+          const { rows } = await repo.list(tenantId, { service, limit, sinceHours: 48 });
+          if (rows.length > 0) {
+            insights = rows.map((row, i): RankedInsight => ({
+              rank: i + 1,
+              insight: {
+                id:         row.id,
+                ruleId:     row.ruleId,
+                ruleName:   row.ruleId,
+                severity:   row.severity as RankedInsight['insight']['severity'],
+                priority:   row.priority,
+                confidence: row.confidence,
+                firedAt:    row.firedAt.toISOString(),
+                ...(row.dedupKey !== null && { dedupKey: row.dedupKey }),
+                signal:     row.signal,
+              } as RankedInsight['insight'],
+              components: {
+                severity:   row.severityScore,
+                confidence: row.confidence,
+                recency:    row.recencyScore,
+                impact:     row.impactScore,
+                composite:  row.compositeScore,
+              },
+            }));
+            computedAt = new Date().toISOString();
+          }
+        }
       } catch {
         // Rule-engine unavailable — read directly from Postgres insights table
         req.log.warn({ tenantId }, 'rule-engine unavailable — falling back to Postgres insights');

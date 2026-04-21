@@ -15,8 +15,11 @@
 
 import crypto from 'node:crypto';
 
-const BASE  = 'http://localhost:3001';
-const SECRET = 'c58edc560f65e74ce89496dd7a4a44b35f40874c678563996b13e20656dbb98a';
+const BASE   = process.env.BASE_URL ?? 'http://localhost:3000';
+const SECRET = process.env.JWT_SECRET ?? 'c58edc560f65e74ce89496dd7a4a44b35f40874c678563996b13e20656dbb98a';
+
+// Tenant UUID — must match what's seeded in Postgres (scripts/db/002_seed_rules.sql)
+const TENANT_ID = process.env.TENANT_ID ?? 'a0000000-0000-0000-0000-000000000001';
 
 // ── colour helpers ────────────────────────────────────────────────────────────
 const C = { reset:'\x1b[0m', bold:'\x1b[1m', cyan:'\x1b[36m', green:'\x1b[32m',
@@ -92,7 +95,7 @@ async function main() {
   h2('Accept: Valid token for tenant-demo');
   dim('Logic: Token contains { tenantId, sub, role }. getTenantId(req) extracts tenantId.');
   dim('       All DB queries are scoped to this tenantId — cross-tenant isolation enforced here.');
-  const TOKEN = mintJwt({ sub: 'user-001', tenantId: 'tenant-demo', role: 'admin', email: 'demo@relevix.dev' }, SECRET);
+  const TOKEN = mintJwt({ sub: 'dev-user', tenantId: TENANT_ID, role: 'admin', email: 'demo@relevix.dev' }, SECRET);
   dim(`Token (truncated): ${TOKEN.slice(0,40)}...`);
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -340,11 +343,12 @@ async function main() {
   h1('TEST COMPLETE — Data State Summary');
 
   console.log(`\n${C.bold}  What's now in Postgres:${C.reset}`);
-  console.log(`  ${C.green}✓${C.reset}  tenants:   1 (tenant-demo, enterprise plan)`);
+  console.log(`  ${C.green}✓${C.reset}  tenants:   1 (Demo Organisation — UUID: a0000000-0000-0000-0000-000000000001)`);
   console.log(`  ${C.green}✓${C.reset}  rules:     5 seeded from infra.rules.yml`);
-  console.log(`  ${C.green}✓${C.reset}  raw_logs:  ~109 events ingested by this test`);
-  console.log(`  ${C.yellow}○${C.reset}  insights:  0 (rule-engine not running — run pnpm db:seed:insights to add sample data)`);
-  console.log(`  ${C.yellow}○${C.reset}  signals:   0 (signal-processor not running)`);
+  console.log(`  ${C.green}✓${C.reset}  insights:  10 seeded directly (bypass rule-engine)`);
+  console.log(`  ${C.green}✓${C.reset}  raw_logs:  events accumulating from every ingest test`);
+  console.log(`  ${C.yellow}○${C.reset}  signals:   0 (signal-processor not running — Go service)`);
+  console.log(`  ${C.yellow}○${C.reset}  kafka:     not running — ingestion uses in-process queue in dev`);
 
   console.log(`\n${C.bold}  Full flow diagram:${C.reset}`);
   console.log(`
