@@ -12,7 +12,7 @@ import type { errorResponseBuilderContext } from '@fastify/rate-limit';
 import jwt from '@fastify/jwt';
 import type { ApiGatewayConfig } from '@relevix/config';
 import type { Logger } from '@relevix/logger';
-import { isRelevixError, InternalError } from '@relevix/errors';
+import { isRelevixError } from '@relevix/errors';
 import type { ApiError } from '@relevix/types';
 import { healthRoutes } from './routes/health.js';
 import { rulesRoutes } from './routes/rules.js';
@@ -105,6 +105,54 @@ export async function buildApp(
   const narrator = createAiNarrator(config);
   const searchService = createInsightSearchService(config);
 
+  // ─── Global error handler ──────────────────────────────────────────────────
+  // IMPORTANT: must be registered BEFORE routes so each route's context
+  // captures our custom handler (Fastify reads this[kErrorHandler] during
+  // route registration, inside the after() callback triggered by register()).
+  app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
+    const traceId = request.id;
+
+    if (isRelevixError(error)) {
+      const body: ApiError = {
+        ok: false,
+        error: {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          traceId,
+        },
+      };
+      void reply.status(error.httpStatus).send(body);
+      return;
+    }
+
+    // Fastify validation errors (schema mismatch)
+    if (error.validation) {
+      const body: ApiError = {
+        ok: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Request validation failed.',
+          details: error.validation,
+          traceId,
+        },
+      };
+      void reply.status(422).send(body);
+      return;
+    }
+
+    // Unknown/unhandled
+    request.log.error({ err: error }, 'Unhandled error');
+    void reply.status(500).send({
+      ok: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'An unexpected internal error occurred.',
+        traceId,
+      },
+    });
+  });
+
   // ─── Routes ────────────────────────────────────────────────────────────────
   await app.register(healthRoutes,    { prefix: '/health' });
   await app.register(metricsRoute);   // GET /metrics — Prometheus scrape
@@ -142,51 +190,6 @@ export async function buildApp(
     prefix: '/v1/logs',
     ingestionUrl: config.INGESTION_URL,
     rateLimit: intelligenceRateLimit,
-  });
-
-  // ─── Global error handler ──────────────────────────────────────────────────
-  // Normalises all errors to the ApiError envelope before responding.
-  app.setErrorHandler((error: FastifyError, request: FastifyRequest, reply: FastifyReply) => {
-    const traceId = request.id;
-
-    if (isRelevixError(error)) {
-      const body: ApiError = {
-        ok: false,
-        error: {
-          code: error.code,
-          message: error.message,
-          details: error.details,
-          traceId,
-        },
-      };
-      return reply.status(error.httpStatus).send(body);
-    }
-
-    // Fastify validation errors (schema mismatch)
-    if (error.validation) {
-      const body: ApiError = {
-        ok: false,
-        error: {
-          code: 'VALIDATION_ERROR',
-          message: 'Request validation failed.',
-          details: error.validation,
-          traceId,
-        },
-      };
-      return reply.status(422).send(body);
-    }
-
-    // Unknown/unhandled
-    const internal = new InternalError(error, traceId);
-    request.log.error({ err: error }, 'Unhandled error');
-    return reply.status(500).send({
-      ok: false,
-      error: {
-        code: internal.code,
-        message: internal.message,
-        traceId,
-      },
-    });
   });
 
   return app;

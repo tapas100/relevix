@@ -25,6 +25,7 @@ import { insightsCacheKey } from '../services/cache.js';
 import type { RuleEngineClient } from '../services/rule-engine-client.js';
 import { normaliseInsights } from '../services/rule-engine-client.js';
 import { authenticate, getTenantId } from '../middleware/auth.js';
+import { InsightRepository } from '../services/insight-repository.js';
 
 // ─── Plugin options ───────────────────────────────────────────────────────────
 
@@ -95,9 +96,45 @@ export async function insightsRoutes(
         return reply.status(200).send(body);
       }
 
-      // ── Slow path: live fetch from rule-engine ──────────────────────────────
-      const raw = await ruleEngineClient.fetchInsights(tenantId, req.id);
-      let insights: RankedInsight[] = normaliseInsights(raw.insights);
+      // ── Slow path: live fetch from rule-engine, fallback to Postgres ────────
+      let insights: RankedInsight[] = [];
+      let fromCache = false;
+      let computedAt = new Date().toISOString();
+
+      try {
+        const raw = await ruleEngineClient.fetchInsights(tenantId, req.id);
+        insights = normaliseInsights(raw.insights);
+        fromCache   = raw.from_cache;
+        computedAt  = raw.computed_at;
+      } catch {
+        // Rule-engine unavailable — read directly from Postgres insights table
+        req.log.warn({ tenantId }, 'rule-engine unavailable — falling back to Postgres insights');
+        const repo = new InsightRepository();
+        const { rows } = await repo.list(tenantId, { service, limit, sinceHours: 48 });
+        insights = rows.map((row, i): RankedInsight => ({
+          rank: i + 1,
+          insight: {
+            id:         row.id,
+            ruleId:     row.ruleId,
+            ruleName:   row.ruleId,
+            severity:   row.severity as RankedInsight['insight']['severity'],
+            priority:   row.priority,
+            confidence: row.confidence,
+            firedAt:    row.firedAt.toISOString(),
+            ...(row.dedupKey !== null && { dedupKey: row.dedupKey }),
+            signal:     row.signal,
+          } as RankedInsight['insight'],
+          components: {
+            severity:   row.severityScore,
+            confidence: row.confidence,
+            recency:    row.recencyScore,
+            impact:     row.impactScore,
+            composite:  row.compositeScore,
+          },
+        }));
+        fromCache  = false;
+        computedAt = new Date().toISOString();
+      }
 
       // Filter by service if requested (match against ruleId prefix or signal.service)
       if (service) {
@@ -116,8 +153,8 @@ export async function insightsRoutes(
         ...(service !== undefined && { service }),
         insights: insights.slice(0, limit),
         total: insights.length,
-        fromCache: raw.from_cache,
-        computedAt: raw.computed_at,
+        fromCache,
+        computedAt,
       };
 
       // Write to cache (best-effort — don't fail the request on cache error)

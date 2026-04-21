@@ -21,7 +21,7 @@ export const BaseConfigSchema = z.object({
   SERVICE_VERSION: z.string().default('0.0.0'),
 
   // OpenTelemetry
-  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional().or(z.literal('').transform(() => undefined)),
   OTEL_ENABLED: z
     .string()
     .transform((v: string) => v === 'true')
@@ -69,7 +69,7 @@ export const ApiGatewayConfigSchema = BaseConfigSchema.extend({
 
   // Search (Elasticsearch)
   ELASTICSEARCH_URL: z.string().url().default('http://localhost:9200'),
-  ELASTICSEARCH_API_KEY: z.string().min(1).optional(),
+  ELASTICSEARCH_API_KEY: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
   // Index alias prefix — actual index is "{prefix}-{tenantId}".
   ELASTICSEARCH_INDEX_PREFIX: z.string().default('relevix-insights'),
   // Hard timeout (ms) passed to ES as ?timeout= — enforces the <100ms SLA.
@@ -78,7 +78,7 @@ export const ApiGatewayConfigSchema = BaseConfigSchema.extend({
   SEARCH_CACHE_TTL_SECONDS: z.coerce.number().int().default(10),
 
   // AI Narrator — optional; if unset the narrator always uses the fallback path.
-  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
   // Model to use. gpt-4o-mini is the default: cheap, fast, sufficient for summaries.
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   // Hard upper-bound on completion tokens to keep costs predictable.
